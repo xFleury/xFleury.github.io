@@ -1,0 +1,275 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Efficient A* Graph Search in C#</title>
+    <meta charset="utf-8" />
+    <meta name="description" content="An efficient A* graph search in C#." />
+    <link rel="shortcut icon" href="GiantSword.ico" />
+    <link rel="apple-touch-icon-precomposed" href="icon-appletouch.png" />
+    <meta property="og:image" content="icon-reddit.png">
+    <style type="text/css">
+        h1, h2, p, .spanlike{ font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif; }
+        header{text-align:center;}
+        h1{text-align:left;margin-left:10%;}
+        hr{margin-left:10%;margin-right:10%;}
+        h2{text-align:left; margin-left:10%;}
+        h3{text-align:left; margin-left:10%;}
+        p, .spanlike{margin-left:10%; margin-right:10%; text-indent:1.5em;}        
+        .refr .good .bad{white-space: nowrap;}
+        .good{background-color:palegreen;}
+        .bad{background-color:salmon;}
+        .csharpcode, .refr{background-color:whitesmoke;}
+        .csharpcode{ margin-left:3%; margin-right:3%; overflow-x:scroll; background-clip:content-box;}
+        .csharpcode, .csharpcode pre, .refr { color: black; font-family: Consolas, "Courier New", Courier, Monospace; }
+        .csharpcode pre { margin: 0em; }
+        .csharpcode .rem { color: #008000; }
+        .csharpcode .kwrd { color: #0000ff; }
+        .csharpcode .utyp { color: rgb(43,145,175); }
+        .csharpcode .str { color: #a31515; }
+        .csharpcode .op { color: #0000c0; }
+        .csharpcode .preproc { color: #cc6633; }
+        .csharpcode .asp { background-color: #ffff00; }
+        .csharpcode .html { color: #800000; }
+        .csharpcode .attr { color: #ff0000; }
+        .csharpcode .alt { background-color: #f4f4f4; width: 100%; margin: 0em; }
+        .csharpcode .lnum { color: #606060; }
+    </style>
+    <script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+      ga('create', 'UA-60695388-1', 'auto');
+      ga('send', 'pageview');
+    </script>
+</head>
+<body>
+    <h1 style="margin-bottom:0px;">Efficient A* Graph Search in C#</h1>
+    <hr />
+    <div>
+        <span class="spanlike" style="margin-top:0px;text-indent:0;float:left">Written by Peter Blain (<a href="mailto:fleurin@gmail.com">fleurin@gmail.com</a>)</span>
+        <span class="spanlike" style="float:right;">March 2015</span>
+    </div>
+    <div style="clear:both;"></div>
+    <p><i>This is not a tutorial on how the A* graph search hueristic works; for a tutorial, see <a rel="nofollow" href="http://theory.stanford.edu/~amitp/GameProgramming/">Amit’s A* Pages</a>.</i></p>
+    <h2>0. Preamble</h2>
+    <p>
+            The implementation of A* graph search used in <a href="http://www.pixelchampions.com">Pixel Champions</a> 
+        for many years had been based off publicly available code samples from a developer who was formerly a member of the C# compiler team: 
+        <a rel="nofollow" href="http://blogs.msdn.com/b/ericlippert/archive/tags/astar/">
+            Path Finding Using A* in C# 3.0</a>. It consisted primarily 
+        of two data structures: a singly linked list that formed an "immutable stack" of nodes, and
+        a sorted hash table of queues that functioned as a <a rel="nofollow" href="http://en.wikipedia.org/wiki/Priority_queue">priority queue</a>.
+        Although simplistic to implement in C#, this design would
+        construct up to 200,000 temporary objects per 100,000 nodes searched.
+    </p>
+    <p>
+        In Pixel Champions, the performance of A* graph search is a limiting factor on server capacity. 
+        The goal of having a large player capacity on low-cost hardware warranted designing a more efficient implementation.
+        The implementation of A* graph search provided below significantly reduces the number of temporary objects by
+        reusing containers and avoiding linked lists.
+    </p>
+    <h2>1. Priority Queue</h2>
+    <p>A* graph search requires a priority queue. In C#, unlike C++ or Java, a priority queue is not included in the standard libraries.
+    The following is an efficient and minimalistic implementation of a priority queue that's based on Jim Mischel's
+    <a rel="nofollow" href="http://www.informit.com/guides/content.aspx?g=dotnet&seqNum=789">Generic BinaryHeap Class</a>.
+    </p>
+<!-- code formatted by http://manoli.net/csharpformat/ -->
+<pre class="csharpcode">
+<span class="kwrd">public</span> <span class="kwrd">class</span> <span class="utyp"><span class="utyp">PriorityQueue</span></span>&lt;T&gt; <span class="kwrd">where</span> T : <span class="utyp">IComparable</span>&lt;T&gt; {
+    <span class="kwrd">private</span> <span class="utyp">List</span>&lt;T&gt; items = <span class="kwrd">new</span> <span class="utyp">List</span>&lt;T&gt;();
+    <span class="kwrd">public</span> <span class="kwrd">int</span> Count { <span class="kwrd">get</span> { <span class="kwrd">return</span> items.Count; } }
+    <span class="kwrd">public</span> <span class="kwrd">void</span> Clear() { items.Clear(); }
+    <span class="kwrd">public</span> <span class="kwrd">void</span> Insert(T item) {
+        <span class="kwrd">int</span> i = items.Count;
+        items.Add(item);
+        <span class="kwrd">while</span> (i &gt; 0 &amp;&amp; items[(i - 1) / 2].CompareTo(item) &gt; 0) {
+            items[i] = items[(i - 1) / 2];
+            i = (i - 1) / 2;
+        }
+        items[i] = item;
+    }
+    <span class="kwrd">public</span> T Peek() { <span class="kwrd">return</span> items[0]; }
+    <span class="kwrd">public</span> T RemoveRoot() {
+        T firstItem = items[0];
+        T tempItem = items[items.Count - 1];
+        items.RemoveAt(items.Count - 1);
+        <span class="kwrd">if</span> (items.Count &gt; 0) {
+            <span class="kwrd">int</span> i = 0;
+            <span class="kwrd">while</span> (i &lt; items.Count / 2) {
+                <span class="kwrd">int</span> j = (2 * i) + 1;
+                <span class="kwrd">if</span> ((j &lt; items.Count - 1) &amp;&amp; (items[j].CompareTo(items[j + 1]) &gt; 0)) ++j;
+                <span class="kwrd">if</span> (items[j].CompareTo(tempItem) &gt;= 0) <span class="kwrd">break</span>;
+                items[i] = items[j];
+                i = j;
+            }
+            items[i] = tempItem;
+        }
+        <span class="kwrd">return</span> firstItem;
+    }
+}</pre>
+    <h2>2. A* Graph Search</h2>
+    <p>The <i>closed list</i> of nodes is implemented as a hash table. Therefor, a <i>node</i> must be able to 
+    be split into a key-value pair in order to prevent storing the key twice in memory. 
+    To accomplish this, <span class="refr"><span class="utyp">Node</span></span> is predefined as a structure containing two components:
+    <span class="refr">TKey</span> and <span class="refr">TValue</span>. It differs from the built-in type
+    <span class="refr"><a rel="nofollow" href="https://msdn.microsoft.com/en-us/library/5tbh8a42%28v=vs.110%29.aspx">KeyValuePair&lt;TKey,TValue&gt;</a></span> by implementing the interface <span class="refr">IComparable&lt;Node&gt;</span> so that nodes can be sorted by their 
+    <span class="refr">TValue</span>.
+    The abstract method <span class="refr">IsDestination</span> should return <span class="refr">true</span> if the presense of 
+    <span class="refr">node</span> in the closed list completes the search. To determine a node's parent node,
+    the data type used for <span class="refr">TValue</span> should include both cost and direction.
+</p>
+<!-- code formatted by http://manoli.net/csharpformat/ -->
+<pre class="csharpcode">
+<span class="kwrd">public</span> <span class="kwrd">abstract</span> <span class="kwrd">class</span> <span class="utyp">AStar</span>&lt;TKey, TValue&gt; <span class="kwrd">where</span> TValue : <span class="utyp">IComparable</span>&lt;TValue&gt; {
+    <span class="kwrd">protected</span> <span class="kwrd">void</span> Graph(<span class="utyp">Node</span> start, <span class="utyp"><span class="utyp">PriorityQueue</span></span>&lt;<span class="utyp">Node</span>&gt; openList, <span class="utyp">Dictionary</span>&lt;TKey, TValue&gt; closedList) {
+        openList.Insert(start);
+        <span class="kwrd">while</span> (openList.Count &gt; 0) {
+            <span class="utyp">Node</span> node = openList.RemoveRoot();
+            <span class="kwrd">if</span> (closedList.ContainsKey(node.position)) <span class="kwrd">continue</span>;
+            closedList.Add(node.position, node.cost);
+            <span class="kwrd">if</span> (IsDestination(node.position)) <span class="kwrd">return</span>;
+            AddNeighbours(node, openList);
+        }
+    }
+    <span class="kwrd">protected</span> <span class="kwrd">abstract</span> <span class="kwrd">void</span> AddNeighbours(<span class="utyp">Node</span> node, <span class="utyp"><span class="utyp">PriorityQueue</span></span>&lt;<span class="utyp">Node</span>&gt; openList);
+    <span class="kwrd">protected</span> <span class="kwrd">abstract</span> <span class="kwrd">bool</span> IsDestination(TKey position);
+    <span class="kwrd">public</span> <span class="kwrd">struct</span> <span class="utyp">Node</span> : <span class="utyp">IComparable</span>&lt;<span class="utyp">Node</span>&gt; {
+        <span class="kwrd">public</span> TKey position;
+        <span class="kwrd">public</span> TValue cost;
+        <span class="kwrd">public</span> Node(TKey position, TValue cost) {
+            <span class="kwrd">this</span>.position = position;
+            <span class="kwrd">this</span>.cost = cost;
+        }
+        <span class="kwrd">public</span> <span class="kwrd">int</span> CompareTo(<span class="utyp">Node</span> other) { <span class="kwrd">return</span> cost.CompareTo(other.cost); }
+    }
+}</pre>
+    <h2>3. Example: Pathfinding an Image</h2>
+    <p>The example application below attempts to find a path between the upper-left corner of a 
+	<a href="http://en.wikipedia.org/wiki/Binary_image">binary images</a> to its bottom-right corner. 
+	If a path can be found, it plots the path (green)
+    and closed list (red/blue) to a copy of the image.</p>
+    <table border="1" style="margin:0 auto; font-size:0; line-height:0;">
+        <tr><td><img src="before1.png" alt="" /></td><td><img src="after1.png" alt="" /></td></tr>
+        <tr><td><img src="before2.png" alt="" /></td><td><img src="after2.png" alt="" /></td></tr>
+    </table>
+
+    <h3>Step 1: Define the generic types: TKey, TValue.</h3>
+    <p>In this example, <span class="refr">TKey</span> is defined as a 
+    <span class="refr"><a rel="nofollow" href="https://msdn.microsoft.com/en-us/library/system.drawing.point%28v=vs.110%29.aspx">Point</a></span>, and 
+    <span class="refr">TValue</span> is defined as the custom structure below, named <span class="refr">Cost</span>.
+    To allow for extraction of the path, the <span class="refr">Cost</span> structure in this example has both cost and direction.
+    To keep this example code short, an index to the parent node is used rather than a direction. An index of <span class="refr">-1</span> is
+    used to indicate that a node has no parent.
+</p>
+<!-- code formatted by http://manoli.net/csharpformat/ -->
+<pre class="csharpcode">
+<span class="kwrd">public</span> <span class="kwrd">struct</span> <span class="utyp">Cost</span> : <span class="utyp">IComparable</span>&lt;<span class="utyp">Cost</span>&gt; {
+    <span class="kwrd">public</span> <span class="kwrd">readonly</span> <span class="kwrd">int</span> parentIndex;
+    <span class="kwrd">public</span> <span class="kwrd">readonly</span> <span class="kwrd">int</span> distanceTravelled; <span class="rem">/*g(x)*/</span>
+    <span class="kwrd">public</span> <span class="kwrd">readonly</span> <span class="kwrd">int</span> totalCost; <span class="rem">/*f(x)*/</span>
+    <span class="kwrd">public</span> Cost(<span class="kwrd">int</span> parentIndex, <span class="kwrd">int</span> distanceTravelled, <span class="kwrd">int</span> totalCost) {
+        <span class="kwrd">this</span>.parentIndex = parentIndex;
+        <span class="kwrd">this</span>.distanceTravelled = distanceTravelled;
+        <span class="kwrd">this</span>.totalCost = totalCost;
+    }
+    <span class="kwrd">public</span> <span class="kwrd">int</span> CompareTo(<span class="utyp">Cost</span> other) { <span class="kwrd">return</span> <span class="kwrd">this</span>.totalCost.CompareTo(other.totalCost); }
+}</pre>
+    <h3>Step 2: Inherit the abstract <span class="utyp">AStar</span> class.</h3>
+    <p>Diagonal and orthogonal movements are given a cost of 7 and 5 respectively. This approximation yields <span class="refr">sqrt(2) ≈ 1.4 = 7/5</span>. Although  
+        <span class="refr"><a rel="nofollow" href="https://msdn.microsoft.com/en-us/library/system.drawing.bitmap.getpixel%28v=vs.110%29.aspx">Bitmap.GetPixel</a></span> and 
+        <span class="refr"><a rel="nofollow" href="https://msdn.microsoft.com/en-us/library/system.drawing.bitmap.setpixel%28v=vs.110%29.aspx">Bitmap.SetPixel</a></span>
+         are notorious for their slowness (<span class="refr"><a href="https://msdn.microsoft.com/en-us/library/5ey6h79d(v=vs.110).aspx">Bitmap.Lockbits</a></span>
+         should be used instead) they are used in this example to, once again, keep the code short.</p>
+<!-- code formatted by http://manoli.net/csharpformat/ -->
+<pre class="csharpcode">
+<span class="kwrd">public</span> <span class="kwrd">class</span> <span class="utyp">BitmapSolver</span> : <span class="utyp">AStar</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt; {
+    <span class="kwrd">private</span> <span class="kwrd">const</span> <span class="kwrd">int</span> baseOrthogonalCost = 5;
+    <span class="kwrd">private</span> <span class="kwrd">const</span> <span class="kwrd">int</span> baseDiagonalCost = 7;
+    <span class="kwrd">public</span> <span class="utyp">Node</span>? solution;
+    <span class="kwrd">private</span> <span class="utyp">Bitmap</span> bitmap;
+    <span class="kwrd">private</span> <span class="utyp">Point</span> destination;
+    <span class="kwrd">private</span> <span class="utyp">Dictionary</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt; closedList;
+    <span class="kwrd">public</span> <span class="kwrd">void</span> Graph(<span class="utyp">Bitmap</span> bitmap, <span class="utyp">PriorityQueue</span>&lt;<span class="utyp">Node</span>&gt; openList, <span class="utyp">Dictionary</span>&lt;<span class="utyp">Point</span>,<span class="utyp">Cost</span>&gt; closedList) {
+        <span class="kwrd">this</span>.bitmap = bitmap;
+        <span class="kwrd">this</span>.closedList = closedList;
+        destination = <span class="kwrd">new</span> <span class="utyp">Point</span>(bitmap.Width-1,bitmap.Height-1);
+        Graph(<span class="kwrd">new</span> <span class="utyp">Node</span>(<span class="utyp">Point</span>.Empty, <span class="kwrd">new</span> <span class="utyp">Cost</span>(-1, 0, GetDistance(<span class="utyp">Point</span>.Empty, destination))), openList, closedList);
+    }
+    <span class="kwrd">public</span> <span class="kwrd">int</span> ToIndex(<span class="utyp">Point</span> position) { <span class="kwrd">return</span> position.Y*bitmap.Width+position.X; }
+    <span class="kwrd">public</span> <span class="utyp">Point</span> ToPosition(<span class="kwrd">int</span> index) { <span class="kwrd">return</span> <span class="kwrd">new</span> <span class="utyp">Point</span>(index % bitmap.Width, index / bitmap.Width); }
+    <span class="kwrd">protected</span> <span class="kwrd">override</span> <span class="kwrd">void</span> AddNeighbours(<span class="utyp">Node</span> node, <span class="utyp">PriorityQueue</span>&lt;<span class="utyp">Node</span>&gt; openList) {
+        <span class="kwrd">int</span> parentIndex = ToIndex(node.position);
+        <span class="kwrd">for</span>(<span class="kwrd">int</span> x=-1;x&lt;=1;x++)
+            <span class="kwrd">for</span>(<span class="kwrd">int</span> y=-1;y&lt;=1;y++)
+                <span class="kwrd">if</span>(!(x==0&amp;&amp;y==0)) {
+                    <span class="utyp">Point</span> newPos = <span class="kwrd">new</span> <span class="utyp">Point</span>(node.position.X + x, node.position.Y + y);
+                    <span class="kwrd">if</span> (newPos.X &gt;= 0 &amp;&amp; newPos.X &lt; bitmap.Width &amp;&amp; newPos.Y &gt;= 0 &amp;&amp; newPos.Y &lt; bitmap.Height) { 
+                        <span class="kwrd">if</span> (bitmap.GetPixel(newPos.X, newPos.Y).R != 0) {
+                            <span class="kwrd">int</span> distanceCost = node.cost.distanceTravelled + 
+                                ((x == 0 || y == 0) ? baseOrthogonalCost : baseDiagonalCost);
+                            openList.Insert(<span class="kwrd">new</span> <span class="utyp">Node</span>(newPos, <span class="kwrd">new</span> <span class="utyp">Cost</span>(parentIndex, distanceCost, 
+                                distanceCost + GetDistance(newPos, destination))));
+                        }
+                    }
+                }
+    }
+    <span class="kwrd">private</span> <span class="kwrd">static</span> <span class="kwrd">int</span> GetDistance(<span class="utyp">Point</span> source, <span class="utyp">Point</span> destination) {
+        <span class="kwrd">int</span> dx = Math.Abs(destination.X - source.X);
+        <span class="kwrd">int</span> dy = Math.Abs(destination.Y - source.Y);
+        <span class="kwrd">int</span> diagonal = Math.Min(dx, dy);
+        <span class="kwrd">int</span> orthogonal = dx + dy - 2 * diagonal;
+        <span class="kwrd">return</span> diagonal * baseDiagonalCost + orthogonal * baseOrthogonalCost;
+    }
+    <span class="kwrd">protected</span> <span class="kwrd">override</span> <span class="kwrd">bool</span> IsDestination(<span class="utyp">Point</span> position) {
+        <span class="kwrd">bool</span> isSolved = position == destination;
+        <span class="kwrd">if</span> (isSolved) solution = <span class="kwrd">new</span> <span class="utyp">Node</span>(position, closedList[position]);
+        <span class="kwrd">return</span> isSolved;
+    }
+}</pre>
+    <h3>Step 3: Plot the output.</h3>
+    <p>
+        Each command line argument is interpreted as a path to an image to solve.
+        For each image that can be solved, a numbered output image is created.
+		Notice that <span class="refr">openList</span> and <span class="refr">closedList</span>
+		have both been marked <span class="refr">readonly</span>; the two containers are
+		cleared and reused rather than destroyed and reconstructed.
+    </p>
+<!-- code formatted by http://manoli.net/csharpformat/ -->
+<pre class="csharpcode">
+<span class="kwrd">public</span> <span class="kwrd">class</span> <span class="utyp">ConsoleMain</span> {
+    <span class="kwrd">readonly</span> <span class="utyp">PriorityQueue</span>&lt;<span class="utyp">AStar</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt;.<span class="utyp">Node</span>&gt; openList = <span class="kwrd">new</span> <span class="utyp">PriorityQueue</span>&lt;<span class="utyp">AStar</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt;.<span class="utyp">Node</span>&gt;();
+    <span class="kwrd">readonly</span> <span class="utyp">Dictionary</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt; closedList = <span class="kwrd">new</span> <span class="utyp">Dictionary</span>&lt;<span class="utyp">Point</span>, <span class="utyp">Cost</span>&gt;();
+    <span class="kwrd">static</span> <span class="kwrd">void</span> Main(<span class="kwrd">string</span>[] args) { <span class="kwrd">new</span> <span class="utyp">ConsoleMain</span>().Run(args); }
+    <span class="kwrd">public</span> <span class="kwrd">void</span> Run(<span class="kwrd">string</span>[] files) {
+        <span class="utyp">BitmapSolver</span> bitmapSolver = <span class="kwrd">new</span> <span class="utyp">BitmapSolver</span>();
+        <span class="kwrd">for</span>(<span class="kwrd">int</span> x=0;x&lt;files.Length;x++)
+            <span class="kwrd">using</span>(<span class="utyp">Bitmap</span> bitmap = (<span class="utyp">Bitmap</span>)<span class="utyp">Bitmap</span>.FromFile(files[x])) {                
+                bitmapSolver.Graph(bitmap, openList, closedList);
+                <span class="kwrd">if</span> (!bitmapSolver.solution.HasValue) <span class="kwrd">continue</span>;
+                <span class="kwrd">int</span> itr=0;
+                <span class="kwrd">foreach</span>(KeyValuePair&lt;<span class="utyp">Point</span>,<span class="utyp">Cost</span>&gt; pair <span class="kwrd">in</span> closedList) {
+                    <span class="utyp">Point</span> pt = pair.Key;
+                    <span class="kwrd">int</span> val = (<span class="kwrd">byte</span>.MaxValue * (itr++)) / closedList.Count;
+                    bitmap.SetPixel(pt.X, pt.Y, Color.FromArgb(<span class="kwrd">byte</span>.MaxValue - val, 0, val));
+                }
+                <span class="utyp">Point</span> pos = bitmapSolver.solution.Value.position;
+                <span class="utyp">Cost</span> cost = bitmapSolver.solution.Value.cost;
+                bitmap.SetPixel(pos.X, pos.Y, Color.Green);
+                <span class="kwrd">do</span> {
+                    pos = bitmapSolver.ToPosition(cost.parentIndex);
+                    cost = closedList[pos];
+                    bitmap.SetPixel(pos.X, pos.Y, Color.Green);
+                }
+                <span class="kwrd">while</span> (cost.parentIndex &gt;= 0);                    
+                bitmap.Save(<span class="str">"Output"</span> + (x + 1) + <span class="str">".png"</span>);
+                bitmapSolver.solution = <span class="kwrd">null</span>;
+                openList.Clear();
+                closedList.Clear();
+            }
+    }
+}</pre>
+    <hr style="margin-top:2em;"/>
+    <p>This page was last modified on 19 March 2015.</p>
+</body>
+</html>
